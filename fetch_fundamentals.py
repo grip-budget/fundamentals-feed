@@ -4,8 +4,13 @@ import os
 import time
 import requests
 
-# SEC EDGAR strictly requires a descriptive User-Agent with a contact email
-SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "AVUVScreener your.email@example.com")
+# SEC EDGAR strictly requires a descriptive User-Agent supplied via environment variable
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "").strip()
+if not SEC_USER_AGENT:
+    raise RuntimeError(
+        "SEC_USER_AGENT environment variable is not set. "
+        "Add it as a GitHub Actions secret or export it locally before running."
+    )
 SEC_HEADERS = {"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 
 NASDAQ_HEADERS = {
