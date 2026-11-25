@@ -135,7 +135,8 @@ def fetch_frame(taxonomy, tag, unit, period):
     return result
 
 
-def get_latest_and_prior_instant(tags_with_tax, unit, quarters):
+def fetch_quarterly_frames(tags_with_tax, unit, quarters):
+    """Returns dict[(year, q)] -> dict[cik] -> (val, tag_name)."""
     frame_cache = {}
     for y, q in quarters:
         period = f"CY{y}Q{q}I"
@@ -144,19 +145,31 @@ def get_latest_and_prior_instant(tags_with_tax, unit, quarters):
             vals = fetch_frame(tax, tag, unit, period)
             for cik, v in vals.items():
                 if cik not in merged:
-                    merged[cik] = v
+                    merged[cik] = (v, tag)
         frame_cache[(y, q)] = merged
+    return frame_cache
 
+
+def get_latest_and_prior_instant(tags_with_tax, unit, quarters, match_same_tag=False):
+    """
+    Returns:
+      latest[cik] = (val, (year, q))
+      prior[cik]  = prior-year same-quarter val (optionally requiring the same XBRL tag)
+      frame_cache = raw quarterly cache
+    """
+    frame_cache = fetch_quarterly_frames(tags_with_tax, unit, quarters)
     latest = {}
     prior = {}
     for y, q in quarters[:4]:
-        for cik, v in frame_cache.get((y, q), {}).items():
+        for cik, (v, tag) in frame_cache.get((y, q), {}).items():
             if cik not in latest:
                 latest[cik] = (v, (y, q))
-                prev_v = frame_cache.get((y - 1, q), {}).get(cik)
-                if prev_v is not None:
-                    prior[cik] = prev_v
-    return latest, prior
+                prev_entry = frame_cache.get((y - 1, q), {}).get(cik)
+                if prev_entry is not None:
+                    prev_v, prev_tag = prev_entry
+                    if (not match_same_tag) or (prev_tag == tag):
+                        prior[cik] = prev_v
+    return latest, prior, frame_cache
 
 
 def get_latest_annual(tags_with_tax, unit):
@@ -178,7 +191,7 @@ def main():
     quarters = recent_quarter_frames(8)
 
     print("Fetching SEC Book Equity...")
-    equity_latest, _ = get_latest_and_prior_instant(
+    equity_latest, _, _ = get_latest_and_prior_instant(
         [
             ("us-gaap", "StockholdersEquity"),
             ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
@@ -188,21 +201,29 @@ def main():
         quarters,
     )
 
+    print("Fetching SEC Goodwill (for Avantis-style Adjusted Book Equity)...")
+    goodwill_frames = fetch_quarterly_frames(
+        [("us-gaap", "Goodwill")],
+        "USD",
+        quarters[:4],
+    )
+
     print("Fetching SEC Total Assets...")
-    assets_latest, assets_prior = get_latest_and_prior_instant(
+    assets_latest, assets_prior, _ = get_latest_and_prior_instant(
         [("us-gaap", "Assets")],
         "USD",
         quarters,
     )
 
     print("Fetching SEC Shares Outstanding...")
-    shares_latest, shares_prior = get_latest_and_prior_instant(
+    shares_latest, shares_prior, _ = get_latest_and_prior_instant(
         [
             ("dei", "EntityCommonStockSharesOutstanding"),
             ("us-gaap", "CommonStockSharesOutstanding"),
         ],
         "shares",
         quarters,
+        match_same_tag=True,
     )
 
     print("Fetching SEC Annual Operating Cash Flow...")
@@ -229,12 +250,16 @@ def main():
             ("us-gaap", "InterestExpense"),
             ("us-gaap", "InterestExpenseDebt"),
             ("us-gaap", "InterestAndDebtExpense"),
+            ("us-gaap", "InterestExpenseOperating"),
+            ("us-gaap", "InterestExpenseNonoperating"),
+            ("us-gaap", "InterestPaidNet"),
         ],
         "USD",
     )
 
     all_tickers = sorted(set(nasdaq.keys()) | set(ticker_to_cik.keys()))
     rows_written = 0
+    goodwill_adjusted_count = 0
 
     with open("fundamentals_import.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -266,7 +291,13 @@ def main():
 
             if cik is not None:
                 if cik in equity_latest:
-                    book_m = round(equity_latest[cik][0] / 1_000_000, 2)
+                    raw_eq, eq_period = equity_latest[cik]
+                    gw_entry = goodwill_frames.get(eq_period, {}).get(cik)
+                    gw = max(0.0, gw_entry[0]) if gw_entry is not None else 0.0
+                    if gw > 0:
+                        goodwill_adjusted_count += 1
+                    book_m = round((raw_eq - gw) / 1_000_000, 2)
+
                 if cik in ocf_annual:
                     ocf_m = round(ocf_annual[cik] / 1_000_000, 2)
 
@@ -305,7 +336,10 @@ def main():
                 ])
                 rows_written += 1
 
-    print(f"Wrote {rows_written} rows to fundamentals_import.csv")
+    print(
+        f"Wrote {rows_written} rows to fundamentals_import.csv "
+        f"(Goodwill subtracted on {goodwill_adjusted_count} tickers)"
+    )
 
 
 if __name__ == "__main__":
