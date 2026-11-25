@@ -22,8 +22,10 @@ jobs:
 
       - name: Install requests
         run: pip install requests
-
+        
       - name: Fetch SEC & NASDAQ fundamentals
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: python fetch_fundamentals.py
 
       - name: Commit updated CSV
